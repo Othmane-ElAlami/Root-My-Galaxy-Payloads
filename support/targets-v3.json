@@ -177,6 +177,20 @@
         "url": "https://raw.githubusercontent.com/BuSung-dev/Root-My-Galaxy-Payloads/main/kernelsu/ksud-e1s-S921NKSSFDZF3-kdp",
         "size": 4758872
       }
+    },
+    {
+      "payloadId": "a06-A065FXXSCCZF1",
+      "displayName": "Galaxy A06 | Kernel 6.6.82",
+      "models": ["SM-A065F", "SM-A065M"],
+      "kernelVersions": ["6.6.82"],
+      "exploit": {
+        "url": "https://raw.githubusercontent.com/BuSung-dev/Root-My-Galaxy-Payloads/main/artifacts/a06-A065FXXSCCZF1/cve-2026-43499-app.so",
+        "size": 104128
+      },
+      "kernelsu": {
+        "url": "https://raw.githubusercontent.com/BuSung-dev/Root-My-Galaxy-Payloads/main/kernelsu/ksud-A065FXXSCCZF1-kdp",
+        "size": 4765336
+      }
     }
   ]
 }
