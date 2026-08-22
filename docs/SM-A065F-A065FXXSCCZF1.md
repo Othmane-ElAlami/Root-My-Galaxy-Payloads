@@ -77,6 +77,52 @@ Total Recovered Symbols: 120,023
 ## P0 Slide Table
 
 Generated and verified with 32 candidate rows (`0x000000` through `0x1f0000`) and 256 qwords against `Image[0x1f0000 - slide]`.
+
 - Header: `src/targets/a06-A065FXXSCCZF1/p0_fingerprint.h`
 - Target Configuration: `src/targets/a06-A065FXXSCCZF1/target.h`
 - Feed Manifest: `support/targets-v3.json` (`a06-A065FXXSCCZF1`)
+
+## Virtual KASLR Oracle (crash fix)
+
+The A06 (MT6768) kernel can boot with a **large virtual KASLR slide far
+beyond the 2 MB physical P0 fingerprint range**. A supervision run previously
+crashed in `rt_mutex_adjust_prio_chain` with a NULL `waiter->lock`
+dereference:
+
+```text
+Kernel Offset: 0x25af280000   (~151 GB virtual slide)
+```
+
+With only `APP_PHYS_P0_ORACLE`, the physical oracle recovers the small
+`slide_p0_offset` (`0x000000`..`0x1f0000`) but the fake waiter object is
+placed using a **wrong virtual base**, so the kernel reads the real stack
+waiter instead of the sprayed fake waiter and dereferences its NULL `lock`
+field.
+
+The fix enables the virtual base oracle exactly like the a36xq MediaTek
+sibling:
+
+```c
+#define APP_PHYS_VIRTUAL_BASE_ORACLE 1
+#define KIMAGE_VIRTUAL_BASE_MIN 0xffffffc080000000ULL
+#define KIMAGE_VIRTUAL_BASE_MAX 0xfffffff07fe00000ULL
+#define SLIDE_VIRTUAL_BASE_DELAY_USEC 25000
+```
+
+`KIMAGE_VIRTUAL_BASE_MIN` equals `KIMAGE_TEXT_BASE` (slide = 0). ARM64 KASLR
+never maps the kernel below the text base — the virtual slide is always
+additive — so accepting slide 0 is correct and strictly more permissive than
+the a36xq bound (`0xffffffd080000000`). `slide_commit_virtual_base()`
+independently enforces the canonical `0xffff` upper 16 bits and 2-MiB
+alignment, and `KIMAGE_VIRTUAL_BASE_MAX` caps the range.
+
+After the physical P0 offset is recovered, `slide_leak_virtual_base()`
+reclaims a kernel page, applies the physical write against
+`data_alias(ASHMEM_MISC_FOPS)` (slot 1 in `SLIDE_BANK_SLOTS`), reads the
+live `ashmem_misc.fops` pointer from the reclaimed pipe page, subtracts
+`ASHMEM_FOPS_OFF`, and commits the result as the arbitrary virtual kernel
+base (`KIMAGE_VIRTUAL_BASE_MIN/MAX` bound it to the canonical A06 KASLR
+range). The existing fingerprint-table slide continues to work
+unchanged; it is no longer required to cover the whole virtual slide. It is
+exercised on the `SLIDE_P0_OFFSET` (retry) path, after the supervisor
+republishes the discovered small offset.
