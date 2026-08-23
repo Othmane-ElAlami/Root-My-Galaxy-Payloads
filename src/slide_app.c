@@ -10,9 +10,25 @@
 #ifndef SLIDE_PSELECT_NFDS
 #define SLIDE_PSELECT_NFDS PSELECT_ROUTE_NFDS
 #endif
+#ifndef SLIDE_WAIT_NSEC
 #define SLIDE_WAIT_NSEC 50000000L
+#endif
 #define SLIDE_REQUEUE_MAX_POLLS 1000
 #define SLIDE_REQUEUE_POLL_USEC 1000
+
+static int slide_pselect_shift(void) {
+  const char *forced = getenv("SLIDE_PSELECT_WORD_SHIFT");
+  if (forced && *forced) {
+    char *end = NULL;
+    errno = 0;
+    long value = strtol(forced, &end, 0);
+    if (!errno && end != forced && !*end && value >= 0 && value <= 14) {
+      return (int)value;
+    }
+    pr_warning("slide pselect invalid forced shift=%s\n", forced);
+  }
+  return SLIDE_PSELECT_WORD_SHIFT;
+}
 
 #if defined(SLIDE_P0_OFFSET_CANDIDATES) && \
     (!defined(APP_PHYS_P0_ORACLE) || !APP_PHYS_P0_ORACLE)
@@ -119,7 +135,7 @@ int slide_pselect_words_per_set(void) {
 }
 
 int slide_pselect_global_word(int waiter_word) {
-  return SLIDE_PSELECT_WORD_SHIFT + waiter_word;
+  return slide_pselect_shift() + waiter_word;
 }
 
 int slide_pselect_put_global_word(

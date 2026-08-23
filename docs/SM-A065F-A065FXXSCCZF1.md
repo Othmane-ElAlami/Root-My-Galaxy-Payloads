@@ -129,20 +129,31 @@ republishes the discovered small offset.
 
 ## pselect fd_set capacity (crash fix)
 
-`SLIDE_PSELECT_WORD_SHIFT=12` aligns the fake non-LEGACY `rt_mutex_waiter`
-(14 qwords, words 0-13) at the reclaimed stack offset, but the global
-`PSELECT_ROUTE_NFDS=320` only gives `3 * (320/64) = 15` fd_set qword slots
-(indices 0-14). Waiter words 3-13, including word 11 (`fake_lock`), then
-fell beyond index 14 and were dropped by `slide_pselect_put_global_word`,
-leaving `waiter->lock == NULL` and a kernel NULL dereference in
-`rt_mutex_adjust_prio_chain -> _raw_spin_trylock`.
+The A06 6.6.82 kernel `core_sys_select()` keeps the fd_set copies on the
+kernel stack only while `FDS_BYTES(nfds) <= SELECT_STACK_ALLOC/6` with
+`SELECT_STACK_ALLOC=256` (`include/linux/poll.h` `FRONTEND_STACK_ALLOC`), i.e.
+**at most 42 bytes per set = nfds 320**.  With `nfds=320` the three sets give
+15 qwords on stack, base `stack+0x3c20` (verified in crash #5: word 0 of the
+fake landed at `0x3c80`).  Any `nfds >= 321` falls back to `kvmalloc` and the
+fake never touches the waiter thread's stack — that is exactly what happened
+with the earlier `SLIDE_PSELECT_NFDS=576` build (crashes #6/#7 all-zero at the
+walked waiter).
 
-The slide pselect now uses a per-target nfds override:
+Consequently `SLIDE_PSELECT_NFDS` must stay at `320` (on-stack), and
+`SLIDE_PSELECT_WORD_SHIFT` must be tuned at runtime (the futex
+`rt_mutex_waiter` stack offset differs per futex call path). The build now
+reads `SLIDE_PSELECT_WORD_SHIFT` from the environment (default 12 = the only
+verified overlap, word 0 at `0x3c80`):
 
 ```c
-#define SLIDE_PSELECT_NFDS 576   /* words_per_set=9 => 27 slots, indices 0..26 */
-#define SLIDE_PSELECT_WORD_SHIFT 12
+#define SLIDE_PSELECT_NFDS 320
+#define SLIDE_PSELECT_WORD_SHIFT 12   /* runtime override: env SLIDE_PSELECT_WORD_SHIFT */
 ```
 
-576 gives `words_per_set = 9` per set, so the three logical fd_set arrays
-cover 27 qword slots and every waiter word (global indices `12..25`) lands.
+Because `waiter->lock` sits at `0x3cd8` = global index 23 but only indices
+0..14 are reachable with the on-stack 15 qwords, the fast REQUEUE_PI futex
+path cannot be fully faked on this kernel; the stack copy can only ever cover
+part of the waiter. The consumer must fire while the futex wait is still
+active (pi_blocked_on non-NULL with a valid lock) and the fd_set copy must
+overlap the exact waiter base, which the runtime shift enables to iterate on
+hardware.

