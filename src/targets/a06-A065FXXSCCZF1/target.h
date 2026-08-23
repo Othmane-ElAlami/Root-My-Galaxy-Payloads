@@ -5,8 +5,21 @@
 #define BUILD_VARIANT_LABEL "a06-A065FXXSCCZF1-app-virtbase-physical-p0-20msx8-safe4-fops-safe"
 #define APP_PHYS_P0_ORACLE 1
 #define APP_PHYS_VIRTUAL_BASE_ORACLE 1
+#define APP_REQUIRE_FRESH_P0_SESSION 1
 #define KIMAGE_VIRTUAL_BASE_MIN 0xffffffc080000000ULL
 #define KIMAGE_VIRTUAL_BASE_MAX 0xfffffff07fe00000ULL
+
+/* Pselect synchronization guards — prevent sched_setattr from firing
+   before the waiter thread is confirmed blocked in do_select.
+   Without these, the consumer fires on a fixed delay and can hit a
+   stale stack-allocated rt_mutex_waiter whose lock field is NULL. */
+#define SLIDE_SYNC_PSELECT_SYSCALL 1
+#define SLIDE_GUARD_PSELECT_SYSCALL 1
+#define SLIDE_PSELECT_READY_TIMEOUT_USEC 30000
+#define SLIDE_PSELECT_RECHECK_TIMEOUT_USEC 30000
+#define SLIDE_PSELECT_WCHAN_CONFIRMATIONS 3
+#define APP_PSELECT_TRIGGER_MAX_AGE_USEC 200000
+#define APP_PSELECT_POST_GUARD_AGE_CHECK 1
 #else
 #define BUILD_VARIANT_LABEL "a06-A065FXXSCCZF1-root-umh"
 #endif
