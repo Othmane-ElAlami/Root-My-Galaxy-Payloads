@@ -620,6 +620,31 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
     int tid = atomic_load(&slide_waiter_tid);
 #endif
 
+#if defined(SLIDE_PSELECT_FINAL_GUARD) && SLIDE_PSELECT_FINAL_GUARD && \
+    defined(SLIDE_SYNC_PSELECT_SYSCALL) && SLIDE_SYNC_PSELECT_SYSCALL
+    /*
+     * Point-blank re-verification immediately before sched_setattr.
+     * The earlier ready/guard checks can pass and yet the waiter can leave
+     * do_select (timeout, spurious fd wakeup, or requeue) in the
+     * microseconds between the last confirmation and this syscall.  In that
+     * window task->pi_blocked_on may still reference the thread's real
+     * stack-allocated rt_mutex_waiter whose ->lock is NULL, and the kernel
+     * NULL derefs in rt_mutex_adjust_prio_chain -> _raw_spin_trylock.
+     * There is no sleep between this check and the syscall, so a pass here
+     * means the waiter is (to a very high degree) still inside do_select.
+     */
+    char final_wchan[64] = "<final-checked>";
+    if (!slide_task_blocked_in_pselect(tid, final_wchan,
+                                       sizeof(final_wchan))) {
+      pr_info("slide pselect final guard=0 tid=%d wchan=%s; "
+              "trigger skipped\n",
+              tid, final_wchan);
+      atomic_store(&slide_consume_stop, 1);
+      return NULL;
+    }
+    pr_info("slide pselect final guard=1 tid=%d wchan=%s\n",
+            tid, final_wchan);
+#endif
     int calls = atomic_load(&slide_consume_calls);
     int entered = atomic_load(&slide_consume_enter_sched) + 1;
     atomic_store(&slide_consume_enter_sched, entered);

