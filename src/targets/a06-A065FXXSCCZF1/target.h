@@ -51,6 +51,16 @@
 #define SLIDE_USE_FAKE_TASK 1
 #define SLIDE_TRACEFS_EVENT_ID 109
 #define SLIDE_TRACEFS_WORKER_CALLER_OFF 0x0014a120ULL
+/*
+ * Non-LEGACY rt_mutex_waiter uses words 0-13.  SHIFT=12 demands global
+ * fd_set indices 12..25 (26 slots), but nfds=320 yields only 3 sets x 5
+ * qwords = 15 slots and slide_pselect_put_global_word drops indices >= 15.
+ * The dropped words include waiter word 11 (fake_lock), leaving
+ * waiter->lock == NULL and crashing rt_mutex_adjust_prio_chain in
+ * _raw_spin_trylock.  Bump the slide pselect nfds to 576 so
+ * words_per_set = 9 and the 3 sets cover 27 slots (indices 0..26).
+ */
+#define SLIDE_PSELECT_NFDS 576
 #define SLIDE_PSELECT_WORD_SHIFT 12
 #define SLIDE_P0_OFFSET_CANDIDATES                        \
   0x000000ULL, 0x010000ULL, 0x020000ULL, 0x030000ULL,     \

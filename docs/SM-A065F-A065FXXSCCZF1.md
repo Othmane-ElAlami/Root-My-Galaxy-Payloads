@@ -126,3 +126,23 @@ range). The existing fingerprint-table slide continues to work
 unchanged; it is no longer required to cover the whole virtual slide. It is
 exercised on the `SLIDE_P0_OFFSET` (retry) path, after the supervisor
 republishes the discovered small offset.
+
+## pselect fd_set capacity (crash fix)
+
+`SLIDE_PSELECT_WORD_SHIFT=12` aligns the fake non-LEGACY `rt_mutex_waiter`
+(14 qwords, words 0-13) at the reclaimed stack offset, but the global
+`PSELECT_ROUTE_NFDS=320` only gives `3 * (320/64) = 15` fd_set qword slots
+(indices 0-14). Waiter words 3-13, including word 11 (`fake_lock`), then
+fell beyond index 14 and were dropped by `slide_pselect_put_global_word`,
+leaving `waiter->lock == NULL` and a kernel NULL dereference in
+`rt_mutex_adjust_prio_chain -> _raw_spin_trylock`.
+
+The slide pselect now uses a per-target nfds override:
+
+```c
+#define SLIDE_PSELECT_NFDS 576   /* words_per_set=9 => 27 slots, indices 0..26 */
+#define SLIDE_PSELECT_WORD_SHIFT 12
+```
+
+576 gives `words_per_set = 9` per set, so the three logical fd_set arrays
+cover 27 qword slots and every waiter word (global indices `12..25`) lands.

@@ -7,6 +7,9 @@
 #ifndef SLIDE_PSELECT_WORD_SHIFT
 #define SLIDE_PSELECT_WORD_SHIFT 0
 #endif
+#ifndef SLIDE_PSELECT_NFDS
+#define SLIDE_PSELECT_NFDS PSELECT_ROUTE_NFDS
+#endif
 #define SLIDE_WAIT_NSEC 50000000L
 #define SLIDE_REQUEUE_MAX_POLLS 1000
 #define SLIDE_REQUEUE_POLL_USEC 1000
@@ -44,7 +47,7 @@ static atomic_int slide_pselect_write_window;
 static atomic_uint_fast64_t slide_pselect_started_ns;
 static int slide_pselect_production_stack;
 #endif
-static int slide_pselect_nfds = PSELECT_ROUTE_NFDS;
+static int slide_pselect_nfds = SLIDE_PSELECT_NFDS;
 static int slide_syscall_pad;
 #if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
 int slide_p0_session_fresh;
@@ -961,7 +964,7 @@ static int slide_trigger_physical_slot(size_t slot) {
     }
 #endif
     char delay_arg[16];
-    slide_pselect_nfds = PSELECT_ROUTE_NFDS;
+    slide_pselect_nfds = SLIDE_PSELECT_NFDS;
     slide_syscall_pad = 0;
     snprintf(delay_arg, sizeof(delay_arg), "%d", delay);
     SYSCHK(setenv("SLIDE_ENTER_DELAY_USEC", delay_arg, 1));
