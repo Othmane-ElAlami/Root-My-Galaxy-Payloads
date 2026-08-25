@@ -206,13 +206,13 @@ void futex_init(void)
 #ifdef KERNELSNITCH_FUTEX_HASH_SIZE
     futex_hashsize = KERNELSNITCH_FUTEX_HASH_SIZE;
 #else
-    unsigned long requested = SYSCHK(sysconf(_SC_NPROCESSORS_ONLN)) * 256;
+    unsigned long requested = SYSCHK(sysconf(_SC_NPROCESSORS_CONF)) * 256;
     futex_hashsize = 1;
     while (futex_hashsize < requested)
         futex_hashsize <<= 1;
 #endif
 #else
-    futex_hashsize = SYSCHK(sysconf(_SC_NPROCESSORS_ONLN) * 256);
+    futex_hashsize = SYSCHK(sysconf(_SC_NPROCESSORS_CONF) * 256);
 #endif
 }
 uint32_t futex_hash(size_t addr, size_t mm)

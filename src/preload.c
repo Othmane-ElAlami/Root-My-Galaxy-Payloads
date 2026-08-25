@@ -243,11 +243,6 @@ __attribute__((constructor)) static void load(void) {
 #if defined(APP_PAYLOAD) && defined(SLIDE_P0_OFFSET_CANDIDATES)
     if (!getenv("SLIDE_P0_OFFSET") &&
         atomic_load(&app_p0_state->p0_ready)) {
-#if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
-      pr_error("fresh P0 session was consumed by the failed child; "
-               "refusing cross-process retry, reboot required\n");
-      break;
-#else
       uintptr_t offset = atomic_load(&app_p0_state->offset);
       uintptr_t gate_page = atomic_load(&app_p0_state->gate_page_struct);
       uintptr_t probe_page = atomic_load(&app_p0_state->probe_page_struct);
@@ -262,15 +257,8 @@ __attribute__((constructor)) static void load(void) {
       SYSCHK(setenv("P0_PROBE_PAGE_STRUCT", probe_page_arg, 1));
       pr_success("supervisor retained p0_offset=%s gate=%s probe=%s\n",
                  offset_arg, gate_page_arg, probe_page_arg);
-#endif
-#if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
-    } else if (!getenv("SLIDE_P0_OFFSET") &&
-               atomic_load(&app_p0_state->dirty)) {
-      pr_error("p0 oracle dirtied before slide discovery; refusing unsafe retry\n");
-#else
     } else if (atomic_load(&app_p0_state->dirty)) {
       pr_error("p0 oracle state dirty or uncertain; refusing unsafe retry\n");
-#endif
       break;
     }
 #endif
