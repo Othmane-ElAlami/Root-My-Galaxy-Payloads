@@ -347,7 +347,7 @@
       ],
       "exploit": {
         "url": "https://raw.githubusercontent.com/Othmane-ElAlami/Root-My-Galaxy-Payloads/main/artifacts/a06-A065FXXSCCZF1/cve-2026-43499-app.so",
-        "size": 143840
+        "size": 144176
       },
       "kernelsu": {
         "url": "https://raw.githubusercontent.com/Othmane-ElAlami/Root-My-Galaxy-Payloads/main/kernelsu/ksud-A566EXXSCCZG6-kdp",

