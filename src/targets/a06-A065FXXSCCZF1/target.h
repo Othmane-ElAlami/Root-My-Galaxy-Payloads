@@ -79,6 +79,20 @@
 #define SLIDE_PSELECT_WORD_SHIFT 3
 #define SLIDE_DIRECT_LOCK_PI 1
 #define SLIDE_SKIP_UNREACHABLE_LOCK 1
+/*
+ * The pselect fd_set stack-copy primitive is dead on this kernel (lock at
+ * G24/G30 unreachable, proven from vmlinux).  Use the proven SIGRETURN
+ * stack writer instead: its fpsimd-trap handler writes a full 0x200-byte
+ * fake waiter into fpsimd->vregs on the same thread's kernel stack, and
+ * arm64 restore_fpsimd_context copies those registers into the fixed
+ * kernel-stack fpsimd slot which overlaps the futex waiter region.
+ * SIGRETURN_FPSIMD_WAITER_OFF/SVE are generic ARM64 sigframe constants.
+ */
+#define SLIDE_STACK_WRITER_MCAST 1
+#define SLIDE_STACK_WRITER_SIGRETURN 2
+#define SLIDE_STACK_WRITER SLIDE_STACK_WRITER_SIGRETURN
+#define SIGRETURN_FPSIMD_WAITER_OFF 0x18
+#define SIGRETURN_SVE_WAITER_OFF 0x28
 #define SLIDE_P0_OFFSET_CANDIDATES                        \
   0x000000ULL, 0x010000ULL, 0x020000ULL, 0x030000ULL,     \
       0x040000ULL, 0x050000ULL, 0x060000ULL, 0x070000ULL, \
