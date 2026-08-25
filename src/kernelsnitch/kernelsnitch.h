@@ -317,10 +317,16 @@ struct kernelsnitch_shared_state *kernelsnitch_setup(size_t __mm_struct_sz, size
     ks->mm_struct = -1;
     ks->mm_struct_sz = __mm_struct_sz;
     ks->mm_slab_order = __mm_slab_order;
+#ifdef KERNELSNITCH_POSSIBLE_CPUS
+    ks->cpu_cnt = SYSCHK(sysconf(_SC_NPROCESSORS_CONF)) * 2;
+#else
     ks->cpu_cnt = sysconf(_SC_NPROCESSORS_ONLN)*2;
+#endif
     ks->thread_cnt = __thread_cnt;
     ks->collisions = __collision_cnt;
     ks->verbose = __verbose;
+    if (getenv("KSNITCH_VERBOSE"))
+        ks->verbose = 1;
     ks->mte_enabled = __mte_enabled;
     ks->appended_futexes = APPENDED_FUTEXES;
     ks->repeat_measurement = REPEAT_MEASUREMENT;
@@ -357,6 +363,12 @@ struct kernelsnitch_shared_state *kernelsnitch_setup(size_t __mm_struct_sz, size
         ks->collisions,
         ks->mte_enabled ? "enabled" : "disabled");
     pin_to_core(0);
+#ifndef KERNELSNITCH_MEASURE_CORE
+#define KERNELSNITCH_MEASURE_CORE 0
+#endif
+#if KERNELSNITCH_MEASURE_CORE != 0
+    pin_to_core(KERNELSNITCH_MEASURE_CORE);
+#endif
     futex_init();
 
     ks->state = KERNELSNITCH_INIT;
@@ -435,6 +447,9 @@ void kernelsnitch_find_collisions(struct kernelsnitch_shared_state *ks)
 #error "invalid KernelSnitch baseline profile"
 #endif
     size_t approx_samples[KERNELSNITCH_BASELINE_SAMPLES];
+#if KERNELSNITCH_MEASURE_CORE != 0
+    pin_to_core(KERNELSNITCH_MEASURE_CORE);
+#endif
     for (size_t i = 0; i < KERNELSNITCH_BASELINE_SAMPLES; ++i)
         approx_samples[i] = MIN(
             __measure(ks, (size_t)&ks->futexes[0]),
